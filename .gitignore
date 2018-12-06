@@ -1,2 +1,8 @@
 /result/*
 /results/*
+/__pycache__
+*.sh
+*.dot
+*.png
+log
+tutorial.py
