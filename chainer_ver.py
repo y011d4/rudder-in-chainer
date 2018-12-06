@@ -15,7 +15,7 @@ FLAGS = flags.FLAGS
 flags.DEFINE_integer('load_epoch', 0, 'load model and optimizer')
 flags.DEFINE_integer('load_trainer', 0, 'load trainer', short_name='l')
 flags.DEFINE_integer('random_seed', 0, 'Random seed')
-flags.DEFINE_integer('n_lstm', 8, 'n_lstm')
+flags.DEFINE_integer('n_lstm', 32, 'n_lstm')
 flags.DEFINE_integer('n_out', 1, 'n_out')
 
 max_timestep = 50
@@ -50,11 +50,12 @@ def generate_sample():
                                 int(n_features/2), a_max=int(n_features/2))
 
     # Check when agent collected a coin (=is at position 2)
-    coin_collect = np.asarray(states == 2, dtype=np.float32)
+    coin_collect = np.asarray(states == 3, dtype=np.float32)
+    coin_collect[states==-3] = -1
 
     # Move all reward to position 50 to make it a delayed reward example
-    true_rewards = coin_collect
-    true_rewards = np.concatenate((true_rewards, np.zeros_like(true_rewards[:ending_frames])))
+    true_rewards = coin_collect * 1.0
+    true_rewards = np.concatenate((np.zeros_like(true_rewards[:ending_frames]), true_rewards, np.zeros_like(true_rewards[:ending_frames])))
     coin_collect[-1] = np.sum(coin_collect)
     coin_collect[:-1] = 0
     rewards = coin_collect
@@ -64,9 +65,10 @@ def generate_sample():
     states_onehot = np.zeros(
         (len(rewards)+ending_frames, n_features), dtype=np.float32)
     states_onehot[np.arange(len(rewards)), states] = 1
+    states_onehot = np.concatenate((np.zeros_like(states_onehot[:10, :]), states_onehot), axis=0)
     actions_onehot = np.concatenate(
-        (actions_onehot, np.zeros_like(actions_onehot[:ending_frames])))
-    rewards = np.concatenate((rewards, np.zeros_like(rewards[:ending_frames])))
+            (np.zeros_like(actions_onehot[:ending_frames]), actions_onehot, np.zeros_like(actions_onehot[:ending_frames])))
+    rewards = np.concatenate((np.zeros_like(rewards[:ending_frames]), rewards, np.zeros_like(rewards[:ending_frames])))
     # Return states, actions, and rewards
     return dict(states=states_onehot[None, :], actions=actions_onehot[None, :], rewards=rewards[None, :, None], true_rewards=true_rewards[None, :, None])
 
@@ -99,10 +101,9 @@ class RewardRedistributionModel(chainer.Chain):
         # Re-define input for gradient calculation
         input = Variable(input.data)
 
-        for i in range(60):
+        for i in range(70):
             pred = self(input[:, i:i+1, :])
         intgrd_pred = pred[:, 0:1]
-        print(intgrd_pred.shape)
 
         if epoch==1:
             create_computational_graph(intgrd_pred, filename='./graph_intg.dot')
@@ -118,17 +119,21 @@ class RewardRedistributionModel(chainer.Chain):
         intgrd_grads = np.sum(grads, axis=0)
         intgrd_grads *= lstm_inputs[0].data
         intgrd_grads = np.sum(intgrd_grads, axis=-1) / n_intgrd_steps
-        intgrd_grads = np.concatenate([intgrd_grads[:-10], np.zeros_like(intgrd_grads[:10])], axis=0)
+        intgrd_grads = np.concatenate([np.zeros_like(intgrd_grads[:10]), intgrd_grads[10:-10], np.zeros_like(intgrd_grads[:10])], axis=0)
 
         intgrd_zero_prediction = intgrd_pred[0]
         intgrd_full_prediction = intgrd_pred[-1]
         intgrd_prediction_diff = intgrd_full_prediction - intgrd_zero_prediction
         intgrd_sum = np.sum(intgrd_grads)
-        intgrd_grads *= np.sum(sample['true_rewards'][0, :, 0])/intgrd_sum
+        #intgrd_grads *= np.sum(sample['true_rewards'][0, :, 0])/intgrd_sum
 
-        plt.plot(intgrd_grads.data, label='pred')
-        plt.plot(sample['true_rewards'][0, :, 0], label='true')
+        plt.plot(intgrd_grads.data[10:60], label='pred')
+        plt.plot(sample['true_rewards'][0, 10:60, 0], label='true')
         plt.legend(loc='best')
+        plt.xlim(0.0, 50.0)
+        plt.ylim(-1.2, 1.2)
+        plt.xlabel('Time step')
+        plt.ylabel('Reward')
         #plt.show()
         plt.savefig('./result/rudder_{}.png'.format(epoch))
         plt.clf()
@@ -163,7 +168,7 @@ class Updater(chainer.training.updaters.StandardUpdater):
         input = Variable(input.data)
 
         pred = []
-        for i in range(60):
+        for i in range(70):
             pred.append(self.model(input[:, i:i+1]))
         pred = F.stack(pred, axis=1)
         true_return = F.sum(Variable(sample['rewards']))
