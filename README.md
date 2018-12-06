@@ -1,4 +1,4 @@
-## RUDDER implemented in chainer
+## RUDDER implementation in Chainer
 #### About this repository
 
 This repository is for my study about RUDDER technique.
