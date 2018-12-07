@@ -10,6 +10,10 @@ import chainer.links as L
 from chainer import Variable
 from absl import app, flags, logging
 
+from utils import reset_seed, create_computational_graph
+from simulator import Simulator
+from model import LSTMAndFC
+
 FLAGS = flags.FLAGS
 
 flags.DEFINE_integer('load_epoch', 0, 'load model and optimizer')
@@ -28,84 +32,8 @@ flags.DEFINE_integer('n_save_epoch', 1000,
                      'Save some models in each n_save_epoch each epoch')
 flags.DEFINE_integer('n_log', 100, 'Log in each n_log epoch')
 flags.DEFINE_integer('n_minibatch', 1, 'Minibatch number when learning')
+#flags.DEFINE_integer('gpu', -1, 'use gpu')
 
-
-def reset_seed(seed=0):
-    random.seed(seed)
-    np.random.seed(seed)
-    if chainer.cuda.available:
-        chainer.cuda.cupy.random.seed(seed)
-
-
-def create_computational_graph(variable, filename='./graph.dot'):
-    g = chainer.computational_graph.build_computational_graph(variable)
-    with open(filename, 'w') as o:
-        o.write(g.dump())
-
-
-class Simulator():
-
-    def generate_sample(self):
-        """Create sample episodes from our example environment"""
-        # Create random actions
-        actions = np.asarray(np.random.randint(
-            low=0, high=2, size=(FLAGS.max_timestep,)), dtype=np.float32)
-        actions_onehot = np.zeros((FLAGS.max_timestep, 2), dtype=np.float32)
-        actions_onehot[actions == 0, 0] = 1
-        actions_onehot[:, 1] = 1 - actions_onehot[:, 0]  # [0, 1] or [1, 0]
-        actions += actions - 1  # -1 or 1
-
-        # Create states to actions, make sure agent stays in range [-6, 6]
-        states = np.zeros_like(actions)
-        for i, a in enumerate(actions):
-            if i == 0:
-                states[i] = a
-            else:
-                states[i] = np.clip(states[i-1] + a, a_min=-
-                                    int(FLAGS.n_features/2), a_max=int(FLAGS.n_features/2))
-
-        # Check when agent collected a coin (=is at position 2)
-        coin_collect = np.asarray(states == 2, dtype=np.float32)
-        #coin_collect[states == -3] = -1
-
-        # Move all reward to position 50 to make it a delayed reward example
-        true_rewards = coin_collect * 1.0
-        true_rewards = np.concatenate((np.zeros_like(
-            true_rewards[:FLAGS.n_padding_frame]), true_rewards, np.zeros_like(true_rewards[:FLAGS.n_padding_frame])))
-        coin_collect[-1] = np.sum(coin_collect)
-        coin_collect[:-1] = 0
-        rewards = coin_collect
-
-        # Padd end of game sequences with zero-states
-        states = np.asarray(states, np.int) + int(FLAGS.n_features/2)
-        states_onehot = np.zeros(
-            (len(rewards)+FLAGS.n_padding_frame, FLAGS.n_features), dtype=np.float32)
-        states_onehot[np.arange(len(rewards)), states] = 1
-        states_onehot = np.concatenate(
-            (np.zeros_like(states_onehot[:10, :]), states_onehot), axis=0)
-        actions_onehot = np.concatenate(
-            (np.zeros_like(actions_onehot[:FLAGS.n_padding_frame]), actions_onehot, np.zeros_like(actions_onehot[:FLAGS.n_padding_frame])))
-        rewards = np.concatenate((np.zeros_like(
-            rewards[:FLAGS.n_padding_frame]), rewards, np.zeros_like(rewards[:FLAGS.n_padding_frame])))
-        # Return states, actions, and rewards
-        return dict(states=states_onehot[None, :], actions=actions_onehot[None, :], rewards=rewards[None, :, None], true_rewards=true_rewards[None, :, None])
-
-
-class LSTMAndFC(chainer.Chain):
-
-    def __init__(self):
-        super(LSTMAndFC, self).__init__()
-        with self.init_scope():
-            self.lstm = L.LSTM(
-                None, FLAGS.n_lstm, lateral_init=chainer.initializers.Normal(scale=1.0))
-            self.l = L.Linear(None, FLAGS.n_out)
-
-    def __call__(self, x):
-        h = self.lstm(x)
-        return self.l(h)
-
-    def reset_state(self):
-        self.lstm.reset_state()
 
 class RewardRedistributionModel():
 
