@@ -3,6 +3,7 @@
 /__pycache__
 *.sh
 *.dot
-*.png
+graph.png
+graph_intg.png
 log
 tutorial.py
