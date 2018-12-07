@@ -27,6 +27,7 @@ flags.DEFINE_integer('n_epoch', 100000, 'Learning epoch number')
 flags.DEFINE_integer('n_save_epoch', 1000,
                      'Save some models in each n_save_epoch each epoch')
 flags.DEFINE_integer('n_log', 100, 'Log in each n_log epoch')
+flags.DEFINE_integer('n_minibatch', 1, 'Minibatch number when learning')
 
 
 def reset_seed(seed=0):
@@ -34,52 +35,6 @@ def reset_seed(seed=0):
     np.random.seed(seed)
     if chainer.cuda.available:
         chainer.cuda.cupy.random.seed(seed)
-
-
-def generate_sample():
-    """Create sample episodes from our example environment"""
-    # Create random actions
-    actions = np.asarray(np.random.randint(
-        low=0, high=2, size=(FLAGS.max_timestep,)), dtype=np.float32)
-    actions_onehot = np.zeros((FLAGS.max_timestep, 2), dtype=np.float32)
-    actions_onehot[actions == 0, 0] = 1
-    actions_onehot[:, 1] = 1 - actions_onehot[:, 0]  # [0, 1] or [1, 0]
-    actions += actions - 1  # -1 or 1
-
-    # Create states to actions, make sure agent stays in range [-6, 6]
-    states = np.zeros_like(actions)
-    for i, a in enumerate(actions):
-        if i == 0:
-            states[i] = a
-        else:
-            states[i] = np.clip(states[i-1] + a, a_min=-
-                                int(FLAGS.n_features/2), a_max=int(FLAGS.n_features/2))
-
-    # Check when agent collected a coin (=is at position 2)
-    coin_collect = np.asarray(states == 3, dtype=np.float32)
-    coin_collect[states == -3] = -1
-
-    # Move all reward to position 50 to make it a delayed reward example
-    true_rewards = coin_collect * 1.0
-    true_rewards = np.concatenate((np.zeros_like(
-        true_rewards[:FLAGS.n_padding_frame]), true_rewards, np.zeros_like(true_rewards[:FLAGS.n_padding_frame])))
-    coin_collect[-1] = np.sum(coin_collect)
-    coin_collect[:-1] = 0
-    rewards = coin_collect
-
-    # Padd end of game sequences with zero-states
-    states = np.asarray(states, np.int) + int(FLAGS.n_features/2)
-    states_onehot = np.zeros(
-        (len(rewards)+FLAGS.n_padding_frame, FLAGS.n_features), dtype=np.float32)
-    states_onehot[np.arange(len(rewards)), states] = 1
-    states_onehot = np.concatenate(
-        (np.zeros_like(states_onehot[:10, :]), states_onehot), axis=0)
-    actions_onehot = np.concatenate(
-        (np.zeros_like(actions_onehot[:FLAGS.n_padding_frame]), actions_onehot, np.zeros_like(actions_onehot[:FLAGS.n_padding_frame])))
-    rewards = np.concatenate((np.zeros_like(
-        rewards[:FLAGS.n_padding_frame]), rewards, np.zeros_like(rewards[:FLAGS.n_padding_frame])))
-    # Return states, actions, and rewards
-    return dict(states=states_onehot[None, :], actions=actions_onehot[None, :], rewards=rewards[None, :, None], true_rewards=true_rewards[None, :, None])
 
 
 def create_computational_graph(variable, filename='./graph.dot'):
@@ -110,8 +65,8 @@ class Simulator():
                                     int(FLAGS.n_features/2), a_max=int(FLAGS.n_features/2))
 
         # Check when agent collected a coin (=is at position 2)
-        coin_collect = np.asarray(states == 3, dtype=np.float32)
-        coin_collect[states == -3] = -1
+        coin_collect = np.asarray(states == 2, dtype=np.float32)
+        #coin_collect[states == -3] = -1
 
         # Move all reward to position 50 to make it a delayed reward example
         true_rewards = coin_collect * 1.0
@@ -136,15 +91,14 @@ class Simulator():
         return dict(states=states_onehot[None, :], actions=actions_onehot[None, :], rewards=rewards[None, :, None], true_rewards=true_rewards[None, :, None])
 
 
-class RewardRedistributionModel(chainer.Chain):
+class LSTMAndFC(chainer.Chain):
 
     def __init__(self):
-        super(RewardRedistributionModel, self).__init__()
+        super(LSTMAndFC, self).__init__()
         with self.init_scope():
             self.lstm = L.LSTM(
                 None, FLAGS.n_lstm, lateral_init=chainer.initializers.Normal(scale=1.0))
             self.l = L.Linear(None, FLAGS.n_out)
-        self.simulator = Simulator()
 
     def __call__(self, x):
         h = self.lstm(x)
@@ -153,6 +107,12 @@ class RewardRedistributionModel(chainer.Chain):
     def reset_state(self):
         self.lstm.reset_state()
 
+class RewardRedistributionModel():
+
+    def __init__(self, model):
+        self.model = model
+        self.simulator = Simulator()
+
     def get_loss(self):
         sample = self.simulator.generate_sample()
         input = F.concat((sample['states'], sample['actions']), axis=2)
@@ -160,7 +120,7 @@ class RewardRedistributionModel(chainer.Chain):
 
         pred = []
         for i in range(FLAGS.max_timestep+2*FLAGS.n_padding_frame):
-            pred.append(self(input[:, i:i+1]))
+            pred.append(self.model(input[:, i:i+1]))
         pred = F.stack(pred, axis=1)
         true_return = F.sum(Variable(sample['rewards']))
         loss = F.square(true_return-pred[:, -1, 0])
@@ -177,15 +137,15 @@ class RewardRedistributionModel(chainer.Chain):
         input = Variable(input.data)
 
         for i in range(FLAGS.max_timestep+2*FLAGS.n_padding_frame):
-            pred = self(input[:, i:i+1, :])
+            pred = self.model(input[:, i:i+1, :])
         intgrd_pred = pred[:, 0:1]
 
         if epoch == 1:
             create_computational_graph(
                 intgrd_pred, filename='./graph_intg.dot')
 
-        self.reset_state()
-        self.cleargrads()
+        self.model.reset_state()
+        self.model.cleargrads()
         intgrd_pred.grad = np.ones((500, 1), dtype='f')
         intgrd_pred.backward(retain_grad=True)
         intgrd_pred.unchain_backward()
@@ -234,12 +194,13 @@ class Updater(chainer.training.updaters.StandardUpdater):
     def __init__(self, optimizer):
         self.optimizer = optimizer
         self.model = optimizer.target
+        self.rudder = RewardRedistributionModel(self.model)
         super(Updater, self).__init__(Iterator(), optimizer)
         self.loss_history = deque(maxlen=FLAGS.loss_history_size)
         self.min_loss = 10000000.0
 
     def update_LSTM(self, epoch):
-        sample, pred, loss = self.model.get_loss()
+        sample, pred, loss = self.rudder.get_loss()
 
         self.optimizer.target.reset_state()
         self.optimizer.target.cleargrads()
@@ -266,15 +227,16 @@ class Updater(chainer.training.updaters.StandardUpdater):
         if mean_loss < self.min_loss and len(self.loss_history) == FLAGS.loss_history_size:
             self.min_loss = mean_loss
             logging.info('min_loss is updated: %.5f' % self.min_loss)
-            self.model.return_decomposition(epoch)
+            self.rudder.return_decomposition(epoch)
 
 
 def main(argv):
     reset_seed(seed=FLAGS.random_seed)
 
-    model = RewardRedistributionModel()
+    model = LSTMAndFC()
     optimizer = chainer.optimizers.Adam(alpha=0.01)
     optimizer.setup(model)
+    rudder = RewardRedistributionModel(model)
 
     # if FLAGS.load_epoch:
     #    chainer.serializers.load_npz('./result/model_snapshot_{}'.format(FLAGS.load_epoch), model)
