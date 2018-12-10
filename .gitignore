@@ -5,5 +5,7 @@
 *.dot
 graph.png
 graph_intg.png
-log
+log_cumtime
+log_tottime
 tutorial.py
+/baselines-rudder

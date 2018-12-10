@@ -6,7 +6,15 @@ FLAGS = flags.FLAGS
 
 class Simulator():
 
+    def __init__(self):
+        if FLAGS.gpu>=0:
+            import cupy
+            self.xp = cupy
+        else:
+            self.xp = np
+
     def generate_sample(self):
+        xp = self.xp
         """Create sample episodes from our example environment"""
         # Create random actions
         actions = np.asarray(np.random.randint(
@@ -43,11 +51,10 @@ class Simulator():
             (len(rewards)+FLAGS.n_padding_frame, FLAGS.n_features), dtype=np.float32)
         states_onehot[np.arange(len(rewards)), states] = 1
         states_onehot = np.concatenate(
-            (np.zeros_like(states_onehot[:10, :]), states_onehot), axis=0)
+            (np.zeros_like(states_onehot[:FLAGS.n_padding_frame, :]), states_onehot), axis=0)
         actions_onehot = np.concatenate(
             (np.zeros_like(actions_onehot[:FLAGS.n_padding_frame]), actions_onehot, np.zeros_like(actions_onehot[:FLAGS.n_padding_frame])))
         rewards = np.concatenate((np.zeros_like(
             rewards[:FLAGS.n_padding_frame]), rewards, np.zeros_like(rewards[:FLAGS.n_padding_frame])))
         # Return states, actions, and rewards
-        return dict(states=states_onehot[None, :], actions=actions_onehot[None, :], rewards=rewards[None, :, None], true_rewards=true_rewards[None, :, None])
-
+        return dict(states=xp.array(states_onehot[None, :]), actions=xp.array(actions_onehot[None, :]), rewards=xp.array(rewards[None, :, None]), true_rewards=xp.array(true_rewards[None, :, None]))

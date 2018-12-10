@@ -32,7 +32,10 @@ flags.DEFINE_integer('n_save_epoch', 1000,
                      'Save some models in each n_save_epoch each epoch')
 flags.DEFINE_integer('n_log', 100, 'Log in each n_log epoch')
 flags.DEFINE_integer('n_minibatch', 1, 'Minibatch number when learning')
-#flags.DEFINE_integer('gpu', -1, 'use gpu')
+flags.DEFINE_integer('gpu', -1, 'GPU ID')
+
+
+xp = np
 
 
 class RewardRedistributionModel():
@@ -59,7 +62,7 @@ class RewardRedistributionModel():
         lstm_inputs = F.concat((sample['states'], sample['actions']), axis=2)
         n_intgrd_steps = 500
         input = F.concat(
-            [lstm_inputs * w for w in np.linspace(0.0, 1.0, n_intgrd_steps)], axis=0)
+            [lstm_inputs * w for w in xp.linspace(0.0, 1.0, n_intgrd_steps)], axis=0)
 
         # Re-define input for gradient calculation
         input = Variable(input.data)
@@ -74,26 +77,33 @@ class RewardRedistributionModel():
 
         self.model.reset_state()
         self.model.cleargrads()
-        intgrd_pred.grad = np.ones((500, 1), dtype='f')
+        intgrd_pred.grad = xp.ones((500, 1), dtype='f')
         intgrd_pred.backward(retain_grad=True)
         intgrd_pred.unchain_backward()
 
         grads = input.grad
-        grads = np.where(np.isnan(grads), np.zeros_like(grads), grads)
-        intgrd_grads = np.sum(grads, axis=0)
+        grads = xp.where(xp.isnan(grads), xp.zeros_like(grads), grads)
+        intgrd_grads = xp.sum(grads, axis=0)
         intgrd_grads *= lstm_inputs[0].data
-        intgrd_grads = np.sum(intgrd_grads, axis=-1) / n_intgrd_steps
-        intgrd_grads = np.concatenate([np.zeros_like(
-            intgrd_grads[:10]), intgrd_grads[10:-10], np.zeros_like(intgrd_grads[:10])], axis=0)
+        intgrd_grads = xp.sum(intgrd_grads, axis=-1) / n_intgrd_steps
+        intgrd_grads = xp.concatenate([xp.zeros_like(
+            intgrd_grads[:10]), intgrd_grads[10:-10], xp.zeros_like(intgrd_grads[:10])], axis=0)
 
         intgrd_zero_prediction = intgrd_pred[0]
         intgrd_full_prediction = intgrd_pred[-1]
         intgrd_prediction_diff = intgrd_full_prediction - intgrd_zero_prediction
-        intgrd_sum = np.sum(intgrd_grads)
+        intgrd_sum = xp.sum(intgrd_grads)
         #intgrd_grads *= np.sum(sample['true_rewards'][0, :, 0])/intgrd_sum
 
-        plt.plot(intgrd_grads.data[10:60], label='pred')
-        plt.plot(sample['true_rewards'][0, 10:60, 0], label='true')
+        if xp!=np:
+            pred_plot = chainer.cuda.to_cpu(intgrd_grads)[10:60]
+            true_plot = chainer.cuda.to_cpu(sample['true_rewards'])[0, 10:60, 0]
+        else:
+            pred_plot = intgrd_grads[10:60]
+            true_plot = sample['true_rewards'][0, 10:60, 0]
+
+        plt.plot(pred_plot, label='pred')
+        plt.plot(true_plot, label='true')
         plt.legend(loc='best')
         plt.xlim(0.0, 50.0)
         plt.ylim(-1.2, 1.2)
@@ -138,7 +148,10 @@ class Updater(chainer.training.updaters.StandardUpdater):
 
         loss = loss.data[0]
 
-        true_return = np.sum(sample['rewards'])
+        if xp!=np:
+            loss = chainer.cuda.to_cpu(loss)
+
+        true_return = xp.sum(sample['rewards'])
         chainer.report(
             {'loss': loss, 'pred': pred[0, -1, 0].data, 'actual': true_return}, observer=self.optimizer.target)
 
@@ -150,6 +163,10 @@ class Updater(chainer.training.updaters.StandardUpdater):
 
         self.update_LSTM(epoch)
 
+        #if xp!=np:
+        #    mean_loss = np.mean(chainer.cuda.to_cpu(self.loss_history))
+        #else:
+        #    mean_loss = np.mean(self.loss_history)
         mean_loss = np.mean(self.loss_history)
 
         if mean_loss < self.min_loss and len(self.loss_history) == FLAGS.loss_history_size:
@@ -159,11 +176,17 @@ class Updater(chainer.training.updaters.StandardUpdater):
 
 
 def main(argv):
+    global xp
     reset_seed(seed=FLAGS.random_seed)
 
     model = LSTMAndFC()
     optimizer = chainer.optimizers.Adam(alpha=0.01)
     optimizer.setup(model)
+    if FLAGS.gpu >= 0:
+        chainer.cuda.get_device(FLAGS.gpu).use()
+        model.to_gpu()
+        import cupy
+        xp = cupy
     rudder = RewardRedistributionModel(model)
 
     # if FLAGS.load_epoch:

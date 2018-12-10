@@ -6,6 +6,7 @@ from absl import app, flags, logging
 
 FLAGS = flags.FLAGS
 
+
 class LSTMAndFC(chainer.Chain):
 
     def __init__(self):
@@ -21,4 +22,3 @@ class LSTMAndFC(chainer.Chain):
 
     def reset_state(self):
         self.lstm.reset_state()
-

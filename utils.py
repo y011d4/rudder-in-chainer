@@ -17,4 +17,3 @@ def create_computational_graph(variable, filename='./graph.dot'):
     g = chainer.computational_graph.build_computational_graph(variable)
     with open(filename, 'w') as o:
         o.write(g.dump())
-
